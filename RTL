@@ -1,0 +1,107 @@
+`timescale 1ns/1ps
+module bspaa_block_4bit (
+    input  [3:0] A, input  [3:0] B, input c_in,
+    output [3:0] S, output c_out
+);
+    wire [3:0] xor_ab;
+    wire Pblk, inv_cin;
+    wire [3:0] carry4_sum, CO;
+    wire carry4_cout;
+    LUT6_2 #(.INIT(64'h666666660FF00FF0)) LUT_DUAL_XOR_01 (
+        .O6(xor_ab[0]), .O5(xor_ab[1]),
+        .I0(A[0]), .I1(B[0]), .I2(A[1]), .I3(B[1]), .I4(1'b0), .I5(1'b1));
+    LUT6_2 #(.INIT(64'h666666660FF00FF0)) LUT_DUAL_XOR_02 (
+        .O6(xor_ab[2]), .O5(xor_ab[3]),
+        .I0(A[2]), .I1(B[2]), .I2(A[3]), .I3(B[3]), .I4(1'b0), .I5(1'b1));
+    LUT6_2 #(.INIT(64'h800080000000FFFF)) LUT_AND_INV (
+        .O6(Pblk), .O5(inv_cin),
+        .I0(xor_ab[0]), .I1(xor_ab[1]), .I2(xor_ab[2]), .I3(xor_ab[3]),
+        .I4(c_in), .I5(1'b1));
+    CARRY4 carry_chain (
+        .O(carry4_sum), .CO({carry4_cout, CO[2:0]}),
+        .CI(c_in), .CYINIT(1'b0), .DI(A), .S(xor_ab));
+    (* dont_touch = "true" *) MUXF7 mux_cout (.O(c_out),  .I0(carry4_cout),   .I1(c_in),    .S(Pblk));
+    MUXF7 mux_s0 (.O(S[0]), .I0(carry4_sum[0]), .I1(inv_cin), .S(Pblk));
+    MUXF7 mux_s1 (.O(S[1]), .I0(carry4_sum[1]), .I1(inv_cin), .S(Pblk));
+    MUXF7 mux_s2 (.O(S[2]), .I0(carry4_sum[2]), .I1(inv_cin), .S(Pblk));
+    MUXF7 mux_s3 (.O(S[3]), .I0(carry4_sum[3]), .I1(inv_cin), .S(Pblk));
+endmodule
+
+`timescale 1ns/1ps
+module bspaa_22bit (
+    input  [21:0] A, input  [21:0] B, input c_in,
+    output [21:0] S, output c_out
+);
+    wire [4:0] carry;
+    wire [3:0] blk5_s;
+    bspaa_block_4bit blk0 (.A(A[ 3: 0]), .B(B[ 3: 0]), .c_in(c_in),     .S(S[ 3: 0]), .c_out(carry[0]));
+    bspaa_block_4bit blk1 (.A(A[ 7: 4]), .B(B[ 7: 4]), .c_in(carry[0]), .S(S[ 7: 4]), .c_out(carry[1]));
+    bspaa_block_4bit blk2 (.A(A[11: 8]), .B(B[11: 8]), .c_in(carry[1]), .S(S[11: 8]), .c_out(carry[2]));
+    bspaa_block_4bit blk3 (.A(A[15:12]), .B(B[15:12]), .c_in(carry[2]), .S(S[15:12]), .c_out(carry[3]));
+    bspaa_block_4bit blk4 (.A(A[19:16]), .B(B[19:16]), .c_in(carry[3]), .S(S[19:16]), .c_out(carry[4]));
+    bspaa_block_4bit blk5 (
+        .A({2'b00, A[21:20]}), .B({2'b00, B[21:20]}),
+        .c_in(carry[4]), .S(blk5_s), .c_out());
+    assign S[21:20] = blk5_s[1:0];
+    assign c_out    = blk5_s[2];
+endmodule
+
+`timescale 1ns/1ps
+module modified_10bit_inaccurate (
+    input  [9:0] A, input  [9:0] B,
+    output [9:0] Sum, output Carry
+);
+    assign Sum[6:0] = 7'b1111111;
+    wire a7=A[7]; wire b7=B[7];
+    wire a8=A[8]; wire b8=B[8];
+    wire a9=A[9]; wire b9=B[9];
+    LUT6_2 #(.INIT(64'hFFF0FFF0EEEEEEEE)) LUT_DUAL_OR (
+        .I0(a7), .I1(b7), .I2(a8), .I3(b8), .I4(1'b0), .I5(1'b1),
+        .O6(Sum[8]), .O5(Sum[7]));
+    LUT6_2 #(.INIT(64'h00008FF00000F000)) LUT_DUAL_CARRY (
+        .I0(a8), .I1(b8), .I2(a9), .I3(b9), .I4(1'b0), .I5(1'b1),
+        .O6(Sum[9]), .O5(Carry));
+endmodule
+
+`timescale 1ns/1ps
+module hoaaned_32bit (
+    input  [31:0] A, input  [31:0] B,
+    output [31:0] Sum, output c_out
+);
+    wire carry_low;
+    modified_10bit_inaccurate inaccurate_blk (
+        .A(A[9:0]), .B(B[9:0]), .Sum(Sum[9:0]), .Carry(carry_low));
+    bspaa_22bit accurate_blk (
+        .A(A[31:10]), .B(B[31:10]), .c_in(carry_low),
+        .S(Sum[31:10]), .c_out(c_out));
+endmodule
+
+`timescale 1ns/1ps
+module hoaaned_wrapper (
+    input         clk,
+    input  [31:0] A,
+    input  [31:0] B,
+    output [31:0] Sum,
+    output        c_out
+);
+    (* DONT_TOUCH = "TRUE" *) reg [23:0] A_hi_reg, B_hi_reg;
+    always @(posedge clk) begin
+        A_hi_reg <= A[31:8];
+        B_hi_reg <= B[31:8];
+    end
+    wire [31:0] A_in = {A_hi_reg, 8'b0};
+    wire [31:0] B_in = {B_hi_reg, 8'b0};
+    wire [31:0] sum_comb;
+    wire        cout_comb;
+    hoaaned_32bit adder (
+        .A(A_in), .B(B_in),
+        .Sum(sum_comb), .c_out(cout_comb));
+    (* DONT_TOUCH = "TRUE" *) reg [23:0] Sum_hi_reg;
+    (* DONT_TOUCH = "TRUE" *) reg        cout_reg;
+    always @(posedge clk) begin
+        Sum_hi_reg <= sum_comb[31:8];
+        cout_reg   <= cout_comb;
+    end
+    assign Sum   = {Sum_hi_reg, sum_comb[7:0]};
+    assign c_out = cout_reg;
+endmodule
